@@ -175,7 +175,7 @@ rx, ry, rw, rh = roi
 roi_box = [rx, ry, rx + rw, ry + rh]
 
 # 4. 타이머 및 상태 변수 정의
-HOLD_TIME = 10.0          # 상태 변경에 필요한 누적 대기 시간 (10초)
+HOLD_TIME = 5.0          # 상태 변경에 필요한 누적 대기 시간 (10초)
 current_state = "EMPTY"  # 현재 고정된 상태 (EMPTY, OCCUPIED, GHOST)
 pending_state = None     # 전환 예정인 상태
 transition_timer = 0.0   # 누적 타이머
@@ -213,7 +213,7 @@ while True:
             if c_name == 'person':
                 person_in_roi = True
             # chair를 제외하고 소지품 대상(bottle 등)만 감지
-            elif c_name in ['bottle']:
+            elif c_name in ['bottle', 'chair']:
                 bag_in_roi = True
 
     # --- [현재 프레임 기준의 감지 상태 판단] ---
