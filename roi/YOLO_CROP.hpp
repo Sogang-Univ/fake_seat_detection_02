@@ -1,4 +1,4 @@
-#ifndef LETTERBOX_HPP
+	#ifndef LETTERBOX_HPP
 #define LETTERBOX_HPP
 
 #include "ap_int.h"
