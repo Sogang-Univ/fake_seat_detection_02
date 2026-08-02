@@ -91,6 +91,31 @@ def _decode_head(feats: np.ndarray, stride: int, anchors: np.ndarray) -> Tuple[n
     return boxes, scores
 
 
+def _order_heads_by_grid_size(yolo_outputs: List[np.ndarray]) -> List[np.ndarray]:
+    """
+    (NOTE 1 대응) A가 주는 헤드 순서가 항상 P3->P5라는 보장이 없으므로,
+    grid 크기(H)로 stride를 역산해서 STRIDES=[8,16,32] 순서에 맞게 재정렬한다.
+    grid 크기가 예상(80/40/20)과 다르면 즉시 에러를 던져서 조용히 틀린 결과가
+    나가는 것을 막는다 (예: 모델 입력이 640이 아니거나 헤드 개수가 다를 때).
+    """
+    expected_grids = {MODEL_INPUT // s: s for s in STRIDES}  # {80:8, 40:16, 20:32}
+    by_stride: Dict[int, np.ndarray] = {}
+    for t in yolo_outputs:
+        gh = t.shape[2]  # (1, num_anchor, H, W, 5+C) 기준 H
+        if gh not in expected_grids:
+            raise ValueError(
+                f"예상치 못한 grid 크기 H={gh} (기대값: {sorted(expected_grids)}). "
+                f"MODEL_INPUT({MODEL_INPUT}) 또는 STRIDES 설정이 A쪽과 다른지 확인 필요."
+            )
+        stride = expected_grids[gh]
+        if stride in by_stride:
+            raise ValueError(f"stride={stride}에 해당하는 헤드가 중복으로 들어옴 (H={gh}).")
+        by_stride[stride] = t
+    if set(by_stride.keys()) != set(STRIDES):
+        raise ValueError(f"헤드 stride 구성이 STRIDES={STRIDES}와 다름: {sorted(by_stride)}")
+    return [by_stride[s] for s in STRIDES]
+
+
 def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float = NMS_IOU_THRESH) -> List[int]:
     if len(boxes) == 0:
         return []
@@ -133,16 +158,23 @@ def _map_model_to_original(boxes: np.ndarray,
 
 def decode_dpu_outputs(yolo_outputs: List[np.ndarray],
                         crop_x0: int = 80, crop_y0: int = 0, crop_size: int = 480,
-                        cls_remap: Optional[Dict[int, Optional[int]]] = None) -> List[Detection]:
+                        cls_remap: Optional[Dict[int, Optional[int]]] = None,
+                        score_thresh: float = SCORE_THRESH,
+                        nms_iou_thresh: float = NMS_IOU_THRESH,
+                        auto_order_heads: bool = True) -> List[Detection]:
     """
     A가 준 raw tensor 리스트(헤드 3개) -> 표준 Detection 리스트.
 
     yolo_outputs: [(1,3,80,80,5+80), (1,3,40,40,5+80), (1,3,20,20,5+80)]
-                  (P3->P5 순서라고 가정. 순서가 다르면 STRIDES 매칭이 깨지니 A와 확인 필요)
+                  순서는 상관없음 (auto_order_heads=True 기본값이면 grid 크기로
+                  stride를 역산해서 자동 정렬함. A와 순서를 100% 확정했다면
+                  auto_order_heads=False로 끄고 오버헤드를 줄여도 됨).
     crop_x0/crop_y0/crop_size: 640x480 원본 프레임 기준, 정사각 크롭 정보
                                 (기본값은 640x480에서 좌우 80px씩 잘라 480x480 만든 케이스)
     cls_remap: COCO id -> 우리 class id. None이면 COCO_TO_OURS 기본값 사용.
                값이 None인 클래스는 버림(우리가 안 쓰는 클래스).
+    score_thresh / nms_iou_thresh: 실측 튜닝용 오버라이드. 지정 안 하면 모듈
+               기본값(v3 레퍼런스에서 가져온 값) 사용 — NOTE 4 참고.
     """
     if cls_remap is None:
         cls_remap = COCO_TO_OURS
@@ -150,15 +182,17 @@ def decode_dpu_outputs(yolo_outputs: List[np.ndarray],
     assert len(yolo_outputs) == len(STRIDES), \
         f"헤드 개수 불일치: {len(yolo_outputs)} != {len(STRIDES)}"
 
+    ordered = _order_heads_by_grid_size(yolo_outputs) if auto_order_heads else yolo_outputs
+
     all_boxes, all_scores = [], []
-    for feats, stride in zip(yolo_outputs, STRIDES):
+    for feats, stride in zip(ordered, STRIDES):
         b, s = _decode_head(feats, stride, ANCHORS[stride])
         all_boxes.append(b)
         all_scores.append(s)
     boxes = np.concatenate(all_boxes, axis=0)     # 모델 입력(640) 픽셀 기준
     scores = np.concatenate(all_scores, axis=0)   # (N, 80)
 
-    mask = scores >= SCORE_THRESH
+    mask = scores >= score_thresh
     results: List[Detection] = []
     for c in range(NUM_CLASSES):
         out_cls = cls_remap.get(c, None)
@@ -169,28 +203,36 @@ def decode_dpu_outputs(yolo_outputs: List[np.ndarray],
         if len(c_boxes) == 0:
             continue
         c_boxes_orig = _map_model_to_original(c_boxes, crop_x0, crop_y0, crop_size)
-        for idx in _nms(c_boxes_orig, c_scores):
+        for idx in _nms(c_boxes_orig, c_scores, iou_thresh=nms_iou_thresh):
             x1, y1, x2, y2 = c_boxes_orig[idx]
             results.append(make_detection(out_cls, float(c_scores[idx]), (x1, y1, x2, y2)))
     return results
 
 
 # ------------------------------------------------------------------
-# NOTE — 팀 회의에서 확인/합의 필요한 항목
+# NOTE — 진행 상황
 # ------------------------------------------------------------------
-# 1. 헤드 순서: yolo_outputs가 항상 [P3(80x80), P4(40x40), P5(20x20)] 순서로
-#    오는지 A와 확정 필요. 순서가 뒤바뀌면 stride-anchor 매칭이 깨짐.
-#    -> shape의 H,W로 자동 판별하는 방어 코드를 넣을 수도 있음 (원하면 추가해드림).
+# [해결됨] 1. 헤드 순서: _order_heads_by_grid_size()가 grid H 크기로 stride를
+#    역산해서 자동 정렬함 (auto_order_heads=True가 기본값). A가 순서를 바꿔서
+#    주거나 실수로 뒤섞여 와도 안전하고, 예상 밖 grid 크기가 들어오면
+#    조용히 틀린 결과를 내지 않고 ValueError로 즉시 실패함.
+#    -> 단, "헤드 개수/모델 입력 640 고정" 자체가 바뀌는 경우는 여전히
+#       STRIDES/MODEL_INPUT 상수를 손으로 갱신해야 함.
 #
-# 2. 크롭 좌표(crop_x0, crop_y0, crop_size)를 "고정값"으로 넣을지,
+# [팀 합의 필요] 2. 크롭 좌표(crop_x0, crop_y0, crop_size)를 "고정값"으로 넣을지,
 #    아니면 프레임마다 A 또는 카메라 모듈에서 함께 넘겨줄지 확정 필요.
 #    지금은 640x480 -> 480x480 중앙 크롭(좌우 80px씩 제거) 가정으로 기본값을 넣어둠.
+#    카메라가 움직이거나 크롭 로직이 프레임마다 달라지면 이 가정이 깨짐.
 #
-# 3. 음료(beverage/bottle/cup)까지 점유 지표로 쓴다면:
+# [팀 합의 필요, 코드로 대신 결정할 수 없음] 3. 음료(beverage/bottle/cup)까지
+#    점유 지표로 쓴다면:
 #    - detection.py의 CLASS_NAMES에 클래스 추가 (예: 2: "cup")
 #    - COCO_TO_OURS에서 39(bottle), 41(cup)을 None 대신 새 ID로 매핑
 #    - detections_to_flags()도 3번째 플래그(beverage_in_roi)를 반환하도록 확장
-#    이건 detection.py 계약을 바꾸는 일이라 B와 먼저 맞춰야 함.
+#    이건 detection.py 계약을 바꾸는 일이라 B와 먼저 맞춰야 함. 여기서 임의로
+#    클래스를 추가하면 B 쪽 상태머신과 계약이 어긋나므로 일부러 손대지 않음.
 #
-# 4. SCORE_THRESH=0.35, NMS_IOU_THRESH=0.55는 v3 레퍼런스 값 그대로 가져온 것.
-#    YOLOv5n + COCO 기준으로는 conf 0.25~0.4 사이에서 실측 튜닝 권장.
+# [부분 해결] 4. SCORE_THRESH=0.35, NMS_IOU_THRESH=0.55는 v3 레퍼런스 값 그대로
+#    가져온 것. decode_dpu_outputs(score_thresh=..., nms_iou_thresh=...)로
+#    호출 시 오버라이드 가능하게 해둠. YOLOv5n + COCO 기준 실측 튜닝은
+#    conf 0.25~0.4 사이에서 여전히 필요 (이건 코드가 아니라 실측의 영역).
