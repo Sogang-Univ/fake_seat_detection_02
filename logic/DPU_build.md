@@ -1,456 +1,486 @@
-방법 A는 실제로 다음 3단계로 진행합니다.
+# 1. 우리가 궁극적으로 만들려는 것
 
-1단계: AMD가 제공한 KV260 DPU 기준 설계를 그대로 재빌드
-2단계: 그 기준 설계에 ROI HLS 가속기를 추가
-3단계: DPU + ROI가 들어 있는 firmware를 KV260에 설치
+최종 목표는 KV260의 PL 안에 다음 두 가속기를 동시에 넣는 것입니다.
 
-여기서 중요한 수정이 하나 있습니다.
+KV260 PL
+├── DPUCZDX8G B4096
+└── ROI crop 가속기
 
-공식 Kria DPU 기준 설계는 일반적으로 Vivado Block Design을 직접 열어 DPU에 ROI를 붙이는 방식보다, Kria Vitis platform에 DPU와 HLS accelerator를 함께 링크하는 방식으로 생성됩니다. 공식 SmartCam 설계도 전처리 IP와 DPU를 하나의 platform/overlay에 통합합니다.
+그런데 DPU를 단순히 Vivado Block Design에 넣는 게 아니라, AMD가 제공하는 Vitis acceleration flow를 사용하기로 했습니다.
 
-0. 먼저 툴 버전을 결정해야 함
+전체 흐름은 다음과 같습니다.
 
-현재 네 환경은:
+① KV260 기본 하드웨어 설계 생성
+        ↓
+② Vitis가 사용할 수 있는 플랫폼으로 변환
+        ↓
+③ DPU를 Vitis kernel 형태로 패키징
+        ↓
+④ 플랫폼과 DPU를 v++로 연결
+        ↓
+⑤ DPU가 포함된 bitstream/xclbin 생성
+        ↓
+⑥ 나중에 ROI kernel도 함께 연결
 
-ROI 설계: Vivado/Vitis HLS 2022.2
-현재 보드 DPU runtime: Vitis AI 2.5
+지금까지는 ②번까지 성공했고, ③~④번을 시도하다 컴퓨터가 죽은 상태입니다.
 
-그런데 공식 KV260 Kria DPU 재빌드 자료는 xlnx_rel_v2022.1 branch와 Vitis 2022.1 흐름을 기준으로 제공됩니다. 공식 문서도 해당 저장소의 xlnx_rel_v2022.1 branch를 clone하도록 안내합니다.
+# 2. 여기서 “플랫폼”이란 무엇인가
 
-따라서 가장 안전한 선택은:
+Vitis에서 말하는 플랫폼은 단순한 FPGA 보드 이름이 아닙니다.
 
-DPU 통합 프로젝트: Vitis/Vivado 2022.1
-ROI HLS 소스: 2022.1에서 다시 합성 및 export
+플랫폼은 Vitis에게 다음 정보를 알려주는 FPGA 기반 설계 틀입니다.
+
+어떤 FPGA인가
+어떤 PS가 있는가
+DDR에 어떻게 접근하는가
+가속기가 사용할 수 있는 AXI 포트는 무엇인가
+사용 가능한 클럭은 몇 MHz인가
+인터럽트는 어디에 연결하는가
+
+즉 DPU가 들어갈 수 있는 빈 건물의 골조 같은 것입니다.
+
+KV260 platform
+├── Zynq UltraScale+ MPSoC
+├── DDR 연결
+├── PS 설정
+├── 100/300/600 MHz 클럭
+├── AXI 제어 포트
+├── AXI 데이터 포트
+└── 인터럽트 포트
+
+DPU는 이 플랫폼 위에 올라가는 가속기입니다.
+
+# 3. 처음 받은 DPU tar 파일의 역할
+
+처음 받은 파일은:
+
+DPUCZDX8G_VAI_v3.0.tar
+
+이었습니다.
+
+이 안에는 다음이 들어 있었습니다.
+
+DPUCZDX8G_VAI_v3.0
+├── dpu_ip       DPU의 실제 RTL/IP
+├── Vitis        DPU를 Vitis kernel로 만들기 위한 파일
+├── prj/Vitis    Vitis 통합 예제
+├── prj/Vivado   Vivado 통합 예제
+└── dpu_conf.vh  DPU 구조 설정
+
+이 패키지가 제공하는 것은 주로 DPU 자체입니다.
+
+하지만 이 패키지의 완성 예제는 ZCU102/ZCU104 중심이었기 때문에, KV260에서 사용하려면 별도의 KV260 플랫폼이 필요했습니다.
+
+그래서 kria-vitis-platforms 저장소를 받은 것입니다.
+
+# 4. kria-vitis-platforms를 받은 이유
+
+다운로드한 저장소:
+
+~/work/kria-vitis-platforms
+
+이 저장소에는 KV260에 맞는 다음 구성들이 들어 있습니다.
+
+KV260용 Vivado 기반 설계
+KV260용 Vitis 플랫폼 생성 스크립트
+KV260용 DPU benchmark 예제
+firmware 패키징 관련 구조
+
+그중 우리가 선택한 플랫폼은:
+
+kv260_ispMipiRx_vcu_DP
 
 입니다.
 
-2022.2에서 만든 ROI IP를 2022.1 DPU 프로젝트에 그대로 넣는 것은 권장하지 않습니다. IP 버전이 다르면 upgrade, synthesis 또는 interface metadata 문제가 발생할 수 있습니다.
+이 플랫폼을 선택한 이유는 현재 보드에서 사용 중이던 기존 DPU firmware의 기반 이름도 같은 계열이었기 때문입니다.
 
-선택지
-선택	판단
-Vitis/Vivado 2022.1을 추가 설치하고 공식 flow 사용	가장 안전
-공식 2022.1 프로젝트를 2022.2로 upgrade	가능성은 있지만 위험 증가
-현재 ROI 프로젝트에 DPU를 직접 추가	방법 B에 가까움
+기존 firmware:
+xilinx_kv260_ispMipiRx_vcu_DP_202210_1
 
-따라서 아래 설명은 2022.1 공식 flow 기준으로 보는 것이 좋습니다.
+새로 만든 2022.2 platform:
+xilinx_kv260_ispMipiRx_vcu_DP_202220_1
 
-1단계: 개발 PC에 필요한 환경 준비
+즉 같은 KV260 multimedia 기반 설계를 2022.2 환경에서 다시 만든 것입니다.
 
-KV260 보드에서 작업하는 것이 아니라, Vivado/Vitis가 설치된 Ubuntu 개발 PC에서 진행합니다.
+# 5. 왜 Git 브랜치를 2022.2로 바꿨는가
 
-필요한 것:
+저장소를 처음 clone했을 때는 main 브랜치였습니다.
 
-Vivado 2022.1
-Vitis 2022.1
-Vitis HLS 2022.1
-PetaLinux 2022.1
-Vitis AI 2.5 관련 DPU integration files
-KV260 Kria platform source
+하지만 우리는:
 
-PetaLinux까지 필요한 이유는 최종 결과가 .bit 하나가 아니라:
+Vivado 2022.2
+Vitis 2022.2
+Vitis AI 3.0
 
-bitstream 또는 xclbin
-device-tree overlay
-firmware metadata
+을 사용하므로, 저장소도 같은 버전인:
 
-를 포함하는 Kria application firmware이기 때문입니다.
+xlnx_rel_v2022.2
 
-2단계: KV260 기준 설계 source 확보
+브랜치로 전환했습니다.
 
-개발 PC의 작업 폴더에서 다음과 같이 clone합니다.
+git switch -c xlnx_rel_v2022.2 --track origin/xlnx_rel_v2022.2
 
-mkdir -p ~/kv260_dpu_work
-cd ~/kv260_dpu_work
+이유는 Vivado/Vitis 프로젝트가 툴 버전에 민감하기 때문입니다.
 
-git clone \
-  --branch xlnx_rel_v2022.1 \
-  --recursive \
-  https://github.com/Xilinx/kria-vitis-platforms.git
+예를 들어 2023.x용 플랫폼 Tcl을 2022.2에서 실행하면 IP 버전, 명령 옵션, board preset 등이 맞지 않을 수 있습니다.
 
-공식 문서에서도 이 repository와 branch를 사용해 KV260 Vitis platform을 구성합니다.
+따라서 현재 조합은 모두 통일됐습니다.
 
-clone이 끝나면:
+DPU IP          Vitis AI 3.0 / 2022.2
+KV260 platform  xlnx_rel_v2022.2
+Vivado          2022.2
+Vitis           2022.2
+# 6. 첫 번째로 만든 파일: .xsa
 
-cd kria-vitis-platforms
-git submodule status
+우리가 먼저 들어간 폴더는 다음입니다.
 
-를 실행합니다.
+kv260/platforms/vivado/kv260_ispMipiRx_vcu_DP
 
---recursive를 빠뜨리면 DPU IP 또는 하위 저장소가 비어 있을 수 있으므로 반드시 확인합니다.
+여기에 있던 Makefile은 다음 명령을 제공했습니다.
 
-3단계: source 구조 이해
+make xsa
 
-대략 다음 종류의 파일을 찾게 됩니다.
+이 명령은 내부적으로:
 
-kria-vitis-platforms/
-├── kv260/
-│   ├── platforms/
-│   │   └── ...
-│   └── overlays/
-│       └── examples/
-│           └── smartcam/
-├── DPU 관련 IP
-├── Vitis kernel 설정
-├── platform 설정
-└── Makefile
+Vivado 2022.2 실행
+→ scripts/main.tcl 실행
+→ KV260 Block Design 생성
+→ platform interface 지정
+→ XSA 작성 및 검증
 
-공식 Kria DPU 추가 튜토리얼에서는 DPU 통합에 다음 두 종류가 필요하다고 설명합니다.
+을 수행했습니다.
 
-DPU IP
-Vitis DPU integration files
+생성된 파일:
 
-이것이 바로 방법 A의 핵심입니다. 네가 DPU의 모든 AXI와 클럭을 새로 그리는 것이 아니라, AMD가 준비한 DPU integration files를 사용합니다.
+project/kv260_ispMipiRx_vcu_DP.xsa
+XSA란 무엇인가
 
-4단계: 기준 KV260 platform만 먼저 빌드
+XSA는 Xilinx Support Archive입니다.
 
-아직 ROI를 넣지 않습니다.
+이 파일에는 하드웨어 설계 정보가 들어 있습니다.
 
-먼저 AMD가 제공한 기준 platform을 그대로 빌드해야 합니다.
+사용 FPGA part
+PS 설정
+Block Design
+AXI 인터페이스
+클럭
+주소 정보
+platform interface
+필요한 경우 bitstream
 
-공식 문서의 KV260 SmartCam platform 예시는 다음과 같은 platform을 사용합니다.
+이번 XSA는 일반적인 하드웨어 전달용 XSA가 아니라 extensible XSA입니다.
 
-xilinx_kv260_ispMipiRx_vcu_DP
+즉 Vitis가 나중에 DPU나 ROI 같은 가속기를 추가할 수 있도록 빈 연결 지점이 정의돼 있습니다.
 
-공식 build 문서는 clone한 repository 안에서 KV260 platform을 생성하는 흐름을 제공합니다.
+README에서 확인한 platform interface는 다음과 같습니다.
 
-여기서 네가 해야 할 일은 해당 branch의 README 또는 Makefile에 따라:
+클럭:
+100 MHz
+300 MHz
+600 MHz
 
-platform 생성
-→ DPU overlay build
-→ firmware package 생성
+가속기 제어 AXI:
+M01_AXI ~ M15_AXI
 
-을 수정 없이 수행하는 것입니다.
+가속기 데이터 AXI:
+HPC1
+HP1
+HP3
+LPD
 
-왜 수정 없이 먼저 빌드하는가
+인터럽트:
+pl_ps_irq0[7:0]
+# 7. 보드 저장소를 설정한 이유
 
-ROI를 처음부터 추가하면 오류가 났을 때 다음 중 무엇 때문인지 알 수 없습니다.
+Vivado가 KV260 보드를 인식하려면 다음 board part가 필요합니다.
 
-개발환경 오류
-DPU source 오류
-platform build 오류
-ROI IP 오류
-DPU-ROI 통합 오류
+xilinx.com:kv260_som:1.4
 
-먼저 DPU 기준 설계가 재현되면:
+그래서 XilinxBoardStore를 clone하고 Vivado 초기화 파일에 board repository 경로를 넣었습니다.
 
-기준 DPU build 성공
-→ 이후 오류는 ROI 추가 과정에서 발생
+set_param board.repoPaths {/home/sogang/work/XilinxBoardStore/boards/Xilinx}
 
-이라고 구분할 수 있습니다.
+이 설정 덕분에 Vivado가 단순히 FPGA part만 인식한 것이 아니라:
 
-5단계: DPU overlay 생성 흐름
+KV260 SOM
+xck26-sfvc784-2LV-c
 
-공식 Kria acceleration flow는 개념적으로 다음과 같이 동작합니다.
+보드 preset까지 사용할 수 있었습니다.
 
-KV260 base platform
-        +
-DPU kernel/integration files
-        ↓
-Vitis linker
-        ↓
-Vivado implementation 자동 실행
-        ↓
-DPU 포함 bitstream/xclbin 생성
+# 8. 두 번째로 만든 파일: .xpfm
 
-즉, 내부적으로 Vivado가 실행되지만 네가 처음부터 Block Design을 그리는 것은 아닙니다.
+XSA가 만들어진 다음 이동한 곳은:
 
-공식 튜토리얼도 기존 image resizing hardware pipeline에 DPU inference unit을 추가해 SmartCam application을 완성하는 흐름을 사용합니다.
+kv260/platforms
 
-생성 과정에서 실제로 일어나는 것
-DPU IP 배치
-DPU AXI master 연결
-DDR 연결
-DPU clock/reset 연결
-DPU interrupt 연결
-implementation
-bitstream 생성
-xclbin packaging
+입니다.
 
-이 대부분을 Makefile과 Vitis linker configuration이 처리합니다.
+여기서 실행한 명령은:
 
-6단계: 기준 DPU firmware를 보드에서 시험
+make platform
 
-생성된 firmware를 KV260으로 복사합니다.
+이었습니다.
 
-최종 산출물 이름은 사용하는 예제와 설정에 따라 달라질 수 있으므로, 특정 파일명을 미리 고정하면 안 됩니다.
+이 Makefile은 내부적으로 xsct를 실행했습니다.
 
-일반적으로 설치 위치는 다음 계열입니다.
+Vivado XSA
+→ XSCT의 platform create
+→ Vitis platform generate
+→ XPFM 생성
 
-/lib/firmware/xilinx/<application-name>/
+생성된 플랫폼 폴더:
 
-설치 후:
+xilinx_kv260_ispMipiRx_vcu_DP_202220_1
 
-sudo xmutil unloadapp
-sudo xmutil listapps
-sudo xmutil loadapp <새로-빌드한-DPU-앱>
+생성된 핵심 파일:
 
-으로 로드합니다.
+xilinx_kv260_ispMipiRx_vcu_DP_202220_1/
+└── kv260_ispMipiRx_vcu_DP.xpfm
+XPFM이란 무엇인가
 
-공식 SmartCam 배포 흐름도 firmware 설치 후 xmutil listapps로 등록 상태를 확인하고 xmutil loadapp으로 application을 로드합니다.
+XPFM은 Vitis Platform Metadata입니다.
 
-검증
+XSA가 하드웨어 설계 자체를 전달한다면, XPFM은 Vitis에게:
 
-현재 성공했던 코드를 그대로 사용합니다.
+이 플랫폼을 사용해라
+하드웨어 정보는 여기에 있다
+사용 가능한 클럭은 이것이다
+사용 가능한 DDR 포트는 이것이다
+가속기를 이곳에 연결할 수 있다
 
-python3 camera_dpu_stream_test.py \
-  --model /home/ubuntu/work/prj/yolov8_head_included.xmodel
+라고 알려주는 플랫폼 진입 파일입니다.
 
-확인할 것:
+그래서 .xpfm 파일 자체 크기가 610바이트로 작아도 정상입니다. 실제 하드웨어 자료는 같은 플랫폼 폴더 안의 다른 파일들과 XSA가 담당합니다.
 
-DPU Runner 생성 성공
-입출력 tensor shape 출력
-Segmentation fault 없음
-300프레임 연속 실행
-DPU 시간 약 9.6 ms와 큰 차이 없음
+# 9. platforminfo로 무엇을 확인했는가
 
-이 단계까지 성공해야 기준 설계 확보가 끝난 것입니다.
+우리는 다음 명령으로 플랫폼을 검사했습니다.
 
-7단계: ROI HLS 코드를 Vitis kernel 형태로 준비
+platforminfo -p kv260_ispMipiRx_vcu_DP.xpfm
 
-방법 A에서는 기존 Vivado용 HLS IP를 그대로 Block Design에 끌어다 놓는 것보다, ROI crop을 Vitis accelerator kernel로 만들어 DPU와 함께 링크하는 방식이 공식 flow에 더 잘 맞습니다.
+그 결과 다음이 확인됐습니다.
 
-현재 네 ROI 함수는 AXI Stream 기반으로 되어 있을 가능성이 큽니다.
+FPGA와 보드
+FPGA Family: zynquplus
+FPGA Device: xck26
+Board Name:  kv260_som
+Board Part:  xck26-sfvc784-2LV-c
+Generated Version: 2022.2
 
-기존 구조:
+즉 엉뚱한 ZCU102 플랫폼이 아니라 정확한 KV260 플랫폼입니다.
 
-void preprocess_top(
-    hls::stream<axis_t>& src,
-    hls::stream<axis_t>& dst
-)
+클럭
+Clock 0: 약 300 MHz
+Clock 1: 약 600 MHz
+Clock 2: 약 100 MHz
 
-하지만 Vitis kernel로 DDR buffer를 직접 받으려면 보통 다음처럼 memory-mapped interface를 사용합니다.
+DPU는 두 클럭을 사용합니다.
 
-void roi_crop_accel(
-    const ap_uint<24>* input,
-    ap_uint<24>* output
-)
+aclk     = 300 MHz
+ap_clk_2 = 600 MHz
 
-그리고 pragma는 개념적으로:
+따라서 플랫폼이 DPU에 필요한 클럭을 제공하고 있습니다.
 
-#pragma HLS INTERFACE m_axi port=input  bundle=gmem0
-#pragma HLS INTERFACE m_axi port=output bundle=gmem1
-#pragma HLS INTERFACE s_axilite port=return
+DDR 접근 포트
+HP1
+HP3
+HPC1
+LPD
 
-형태가 됩니다.
+기존에 정상 동작하던 DPU도 다음 연결을 사용했습니다.
 
-두 구조의 차이
-현재 Vivado IP 방식
-DDR → AXI DMA → AXI Stream → ROI IP → AXI DMA → DDR
-Vitis kernel 방식
-DDR → ROI kernel AXI master → DDR
+DPU M_AXI_GP0 → HPC1
+DPU M_AXI_HP0 → HP1
+DPU M_AXI_HP2 → HP3
 
-Vitis kernel 방식이면 별도의 AXI DMA가 필요하지 않습니다.
+새로 만든 플랫폼에도 똑같은 포트가 존재합니다.
 
-따라서 방법 A를 가장 단순하게 구성하면:
+즉 현재 만든 2022.2 플랫폼은 기존 DPU 연결을 재현할 수 있는 플랫폼입니다. 실제 저장소에도 benchmark용 DPU 패키징 Tcl과 동일 포트 연결 설정이 존재합니다.
 
-DPU
-+ memory-mapped ROI HLS kernel
+# 10. 이제 들어간 benchmark 폴더의 역할
 
-구성이 됩니다.
+다음 폴더로 이동했습니다.
 
-8단계: 기존 AXI-Stream ROI를 유지할 수도 있음
+kv260/overlays/examples/benchmark
 
-현재 검증한 AXI-Stream ROI IP를 반드시 유지하려면:
+여기는 플랫폼 위에 DPU를 올리는 예제입니다.
 
-ROI HLS IP
-+ AXI DMA
+주요 파일은 다음과 같습니다.
 
-를 DPU platform의 Vivado 설계에 추가해야 합니다.
+benchmark/
+├── Makefile
+├── dpu_conf.vh
+├── prj_conf/
+│   └── prj_config_1dpu
+├── scripts/
+│   ├── gen_dpu_xo.tcl
+│   └── package_dpu_kernel.tcl
+└── kernel_xml/dpu/kernel.xml
+# 11. dpu_conf.vh의 역할
 
-하지만 이 경우는 공식 Vitis kernel 통합에서 약간 벗어나고, platform hardware를 직접 수정해야 합니다.
+이 파일은 DPU 내부 구조를 정합니다.
 
-즉 방법 A 안에서도 두 가지가 있습니다.
+확인한 활성 설정은:
 
-A-1 — 더 권장
-DPU 기준 Vitis platform
-+ ROI를 memory-mapped Vitis kernel로 변경
-→ Vitis linker가 함께 통합
+`define B4096
+`define URAM_ENABLE
+`define RAM_USAGE_LOW
+`define CHANNEL_AUGMENTATION_ENABLE
+`define DWCV_ENABLE
+`define CONV_RELU_LEAKYRELU_RELU6
+`define ALU_RELU_RELU6
 
-장점:
+핵심은:
 
-DMA IP를 직접 추가할 필요 없음
-Vitis/XRT buffer 방식 사용 가능
-공식 Kria acceleration flow와 잘 맞음
-DPU와 custom kernel을 함께 package하기 쉬움
-A-2 — 기존 ROI IP 유지
-DPU 기준 platform의 Vivado source
-+ 기존 AXI DMA
-+ 기존 AXI-Stream ROI IP
-→ platform 재생성
+B4096
 
-장점:
+입니다.
 
-이미 검증한 ROI HLS 코드를 거의 그대로 사용
+B4096은 DPU의 병렬 연산 규모입니다.
 
-단점:
+PP  = 8
+ICP = 16
+OCP = 16
+Peak operations/clock = 4096
 
-Vivado platform 내부 수정 필요
-AXI 주소/클럭/리셋/interrupt 직접 연결
-device tree에 DMA/ROI 노드 추가 가능성
+현재 사용 중인 기존 KV260 firmware도 B4096이므로 방향이 맞습니다.
 
-현재 네가 DMA와 ROI IP를 이미 독립적으로 검증했기 때문에 A-2도 가능하지만, 통합 난도는 A-1보다 높습니다.
+URAM_ENABLE은 KV260의 UltraRAM을 DPU 내부 버퍼에 사용한다는 뜻입니다.
 
-9단계: 추천하는 실제 선택
+# 12. prj_config_1dpu의 역할
 
-현재 프로젝트 기간과 목적을 고려하면 다음 구조를 추천합니다.
+이 파일은 DPU 자체의 내부 구조가 아니라, DPU를 플랫폼에 어떻게 연결할지 정합니다.
 
-KV260 DPU 기준 platform
-+
-ROI crop memory-mapped HLS kernel
-→ Vitis로 함께 link
+확인한 설정은:
 
-최종 구조:
+DPU 인스턴스 수: 1개
 
-USB 카메라
-    ↓
-PS/OpenCV frame
-    ↓ DDR input buffer
-ROI HLS kernel
-    ↓ DDR crop buffer
-PS resize 및 DPU 입력 준비
-    ↓ DDR DPU input tensor
-DPU
-    ↓
-PS 후처리와 상태머신
+aclk     = 300 MHz
+ap_clk_2 = 600 MHz
 
-여기에는 ROI와 DPU가 같은 bitstream/xclbin에 들어 있지만, 서로 AXI-Stream으로 직접 연결되지는 않습니다.
+M_AXI_GP0 → HPC1
+M_AXI_HP0 → HP1
+M_AXI_HP2 → HP3
 
-10단계: ROI kernel을 DPU overlay에 추가
+역할을 나누면:
 
-기준 DPU overlay의 Makefile 또는 Vitis linker 설정에 ROI kernel을 추가합니다.
+dpu_conf.vh
+→ DPU 내부 구조 결정
+→ B4096, URAM, 기능 옵션
 
-개념적으로 linker 입력이:
+prj_config_1dpu
+→ DPU 외부 연결 결정
+→ 클럭, DDR 포트, 인스턴스 수
 
-기존:
-DPU kernel
+둘은 서로 다른 역할입니다.
 
-수정:
-DPU kernel
-ROI crop kernel
+# 13. dpu.xo는 무엇인가
 
-이 됩니다.
+benchmark의 첫 번째 빌드 단계는 DPU RTL을 Vitis kernel로 포장하는 것입니다.
 
-Vitis 명령의 개념은 다음과 같습니다.
+DPU RTL/IP
++ kernel.xml
++ package Tcl
+        ↓ Vivado
+binary_container_1/dpu.xo
 
-v++ -c ... roi_crop_accel.cpp -o roi_crop_accel.xo
+.xo는 Vitis에서 사용하는 가속기 kernel object 파일입니다.
 
-그다음 DPU kernel object와 ROI kernel object를 함께 링크합니다.
+소프트웨어의 .o object 파일과 비슷한 개념으로 보면 됩니다.
 
-v++ -l \
-  <DPU kernel objects> \
-  roi_crop_accel.xo \
-  --platform <KV260 platform> \
-  --config <link configuration> \
-  -o roi_dpu.xclbin
+dpu.xo
+= 아직 특정 플랫폼에 완전히 배치되지 않은 DPU 가속기 객체
 
-실제 DPU object 이름과 옵션은 clone한 reference Makefile을 그대로 따라야 합니다. DPU는 일반 custom kernel보다 integration file이 많으므로 위 명령을 독립적으로 새로 작성하지 말고, 기준 Makefile에 ROI .xo만 추가하는 방식이 안전합니다.
+나중에 ROI도 Vitis kernel로 만든다면:
 
-11단계: Vivado 결과 확인
-
-Vitis linker가 완료되면 내부적으로 Vivado implementation project가 생성됩니다.
-
-그 프로젝트를 Vivado에서 열어 다음을 확인할 수 있습니다.
-
-Zynq UltraScale+ MPSoC
-DPUCZDX8G
-ROI crop kernel
-AXI SmartConnect
-clock/reset
-interrupt
-
-여기서 Vivado는 주로 검토와 debug 용도로 사용합니다.
-
-확인 보고서:
-
-Report Utilization
-Report Timing Summary
-Report DRC
-
-특히:
-
-LUT
-FF
-BRAM
-URAM
-DSP
-WNS
-TNS
-
-를 확인합니다.
-
-AMD의 KV260 예제에서도 preprocessing IP와 DPU를 같은 platform에 통합한 뒤 전체 resource utilization을 확인합니다.
-
-12단계: 통합 firmware 생성
-
-링크 결과를 Kria firmware 형식으로 package합니다.
-
-최종 application 이름 예:
-
-kv260-roi-dpu-b4096
-
-결과 디렉터리는 개념적으로:
-
-kv260-roi-dpu-b4096/
-├── kv260-roi-dpu-b4096.xclbin
-├── shell.json 또는 metadata
-├── device-tree overlay
-└── 기타 firmware 파일
+roi_crop.xo
 
 가 됩니다.
 
-정확한 구성은 기준 SmartCam Makefile의 package target을 그대로 사용해야 합니다.
+# 14. v++ --link가 하는 일
 
-13단계: 보드 시험 순서
+DPU .xo가 만들어지면 다음 단계에서:
 
-통합 firmware를 올린 후 절대로 한 번에 전체를 시험하지 않습니다.
+KV260 platform.xpfm
++ dpu.xo
++ prj_config_1dpu
+        ↓ v++ --link
+dpu.xclbin
 
-시험 1 — DPU만
-PS 전처리
+이 됩니다.
+
+이때 v++가 내부적으로 Vivado를 호출하여:
+
+DPU를 플랫폼에 연결
+→ AXI interconnect 구성
+→ 클럭 연결
+→ 주소 할당
+→ 합성
+→ 배치배선
+→ bitstream 생성
+
+을 수행합니다.
+
+즉 네가 Vivado GUI에서 DPU 블록을 직접 놓고 선을 긋는 일을 Vitis linker가 자동으로 수행하는 것입니다.
+
+# 15. XSA, XPFM, XO, XCLBIN의 관계
+
+이 네 개가 가장 헷갈릴 수 있습니다.
+
+XSA
+= KV260 하드웨어 골격
+
+XPFM
+= Vitis가 그 골격을 사용하도록 설명하는 플랫폼 파일
+
+XO
+= 플랫폼에 올릴 가속기 객체
+  예: dpu.xo, roi_crop.xo
+
+XCLBIN
+= 플랫폼과 가속기를 실제로 링크한 최종 FPGA 실행 파일
+
+흐름으로 쓰면:
+
+Vivado platform source
+        ↓
+      XSA
+        ↓
+Vitis platform generation
+        ↓
+      XPFM
+
+DPU RTL → dpu.xo
+ROI HLS → roi_crop.xo
+
+XPFM + dpu.xo + roi_crop.xo
+        ↓ v++ link
+      XCLBIN
+        +
+      bitstream
+
+# 18. 지금 만든 플랫폼은 나중에 ROI와 어떻게 연결되는가
+
+DPU-only 빌드가 성공하면, 최종적으로 다음 구조로 확장합니다.
+
+현재:
+KV260.xpfm + dpu.xo
+→ dpu.xclbin
+
+최종:
+KV260.xpfm + dpu.xo + roi_crop.xo
+→ roi_dpu.xclbin
+
+즉 플랫폼은 다시 만들 필요가 없을 가능성이 큽니다.
+
+ROI를 AXI memory-mapped Vitis kernel로 만들면:
+
+DDR 원본 프레임
+→ ROI kernel
+→ DDR crop 결과
+→ PS resize/quantize
 → DPU
-→ raw tensor
 
-기존 성공 코드로 확인합니다.
+구조가 됩니다.
 
-시험 2 — ROI만
-입력 buffer
-→ ROI HLS kernel
-→ 출력 buffer
-
-중앙 480×480 crop이 맞는지 확인합니다.
-
-시험 3 — 순차 통합
-카메라
-→ ROI HLS
-→ crop buffer
-→ DPU 전처리
-→ DPU
-→ Detection
-→ 상태머신
-
-을 실행합니다.
-
-네가 지금 바로 해야 하는 범위
-
-아직 ROI를 수정하거나 추가하지 말고 아래까지만 먼저 진행하는 것이 맞습니다.
-
-1. 개발 PC에 Vitis/Vivado 2022.1 환경 확인
-2. kria-vitis-platforms xlnx_rel_v2022.1 clone
-3. 공식 KV260 platform build
-4. DPU overlay를 수정 없이 build
-5. 생성 firmware를 KV260에 설치
-6. 현재 xmodel로 DPU 동작 확인
-
-여기까지 성공한 뒤에:
-
-7. ROI를 Vitis memory-mapped kernel로 변환할지
-8. 기존 AXI-Stream ROI + DMA를 유지할지
-
-를 결정하면 됩니다.
-
-추천 최종 방향
-공식 KV260 DPU reference flow
-+ memory-mapped ROI HLS kernel
-
-이 가장 관리하기 쉽습니다.
-
-기존 DMA 기반 ROI 설계는 ROI 알고리즘과 HLS 동작 검증용 설계로 보존하고, 최종 DPU 통합본에서는 ROI 함수를 memory-mapped Vitis kernel로 한 번 재포장하는 방식이 좋습니다.
+다만 기존 ROI가 AXI-Stream + DMA 구조이므로, 그대로 쓸지 .xo용 memory-mapped 구조로 바꿀지는 DPU-only 성공 후 결정해야 합니다.
