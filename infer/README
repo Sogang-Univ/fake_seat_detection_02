@@ -1,4 +1,4 @@
-export_yolov5_xmodel.py로 xmodel과 meta.json을 Compile하고
+quantize.py로 xmodel과 meta.json을 Compile하고
 
 보드로 옮겨서 거기에서 추론을 돌리는 작업을 합니다(infer.py)
 yolo_utils는 그 과정에 필요한 유틸리티 함수들을 담고 있습니다.
