@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart LR
-    A[ROI Crop 결과<br/>640×640 NPY] --> B[INT8 입력 변환]
+    A[ROI Crop 결과<br/>640×640 NPY] --> B[INT8] [Quantize & Compile]
     B --> C[DPU Overlay]
     C --> D[YOLOv5 추론]
     D --> E[Output Dequantization]
@@ -80,7 +80,7 @@ flowchart LR
 
 현재는 양자화 파이프라인을 중심으로 다음 사항을 검증하고 있다.
 
-- Calibration 입력 데이터의 정규화 과정 재검토
+- Calibration(양자화 보정 과정) 입력 데이터의 정규화 과정 재검토
 - Calibration 데이터 수 증가 및 통계 안정화
 - 새로운 xmodel 생성 후 DPU 재검증
 - 필요 시 Layer Dump를 이용한 레이어별 출력 분석
