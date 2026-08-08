@@ -488,3 +488,16 @@ BRAM Resource Over-utilization
 > **자동 생성된 AXI/FIFO IP들의 BRAM 사용량을 분해하여 실제 BRAM 증가 원인을 찾는 것**
 
 임.
+
+# 14. 실제 증가 원인
+DPU보다 ROI+Resize 커널과 함께 자동 생성된 AXI Data FIFO가 핵심 문제입니다.
+
+계산해보면 다음과 같습니다.
+
+블록	RAMB36	RAMB18	Block RAM Tile 환산
+B2304 DPU	50	10	55.0
+crop_and_resize	34	1	34.5
+auto_us_cc_df_0	8	16	16.0
+auto_us_df_0	0	16	8.0
+m00_data_fifo_0	15	2	16.0
+s01_data_fifo_0	8	1	8.5
