@@ -501,3 +501,5 @@ auto_us_cc_df_0	8	16	16.0
 auto_us_df_0	0	16	8.0
 m00_data_fifo_0	15	2	16.0
 s01_data_fifo_0	8	1	8.5
+
+B2304가 너무 큰 것이 아니라, ROI+Resize 추가 시 생성된 AXI Data FIFO 4개가 무려 48.5 BRAM Tile을 사용하고 있으므로, 먼저 HLS의 AXI burst/widening/outstanding 설정을 최적화해야 합니다.
