@@ -682,3 +682,10 @@ burst = 8
 > 초기 통합 설계에서는 Block RAM 사용량이 158.5/144 Tile(110.07%)로 구현이 불가능하였다. HLS M_AXI의 최대 burst length를 256에서 16으로 축소한 결과, `crop_and_resize` 커널의 BRAM 사용량이 34.5 Tile에서 22 Tile로 감소하였으며 전체 BRAM 사용량도 146 Tile(101.39%)까지 감소하였다. 반면 Vitis가 자동 생성한 AXI Data FIFO의 BRAM 사용량은 변하지 않아, burst length 감소가 주로 HLS 커널 내부 AXI adapter의 buffering 자원에 영향을 준 것으로 확인하였다.
 
 이건 꽤 좋은 최적화 결과입니다. **다음 단계는 Burst 8 버전 XO 생성 → 교체 → 재빌드**입니다.
+
+# v.3
+bram의 차이가 없음 -> 다시 busrt를 16으로 변경
+M_AXI_GMEM0 dataWidth="128"
+M_AXI_GMEM1 dataWidth="128" 으로 변경 (기존 512)
+
+# v.4
