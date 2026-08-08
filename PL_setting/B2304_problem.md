@@ -689,3 +689,73 @@ M_AXI_GMEM0 dataWidth="128"
 M_AXI_GMEM1 dataWidth="128" 으로 변경 (기존 512)
 
 # v.4
+좋습니다. **최종 통합 설계가 실제로 성공했고, timing도 모두 만족했습니다.** 이번 결과는 보고서에 바로 넣어도 될 정도로 명확합니다.
+
+최종 routed resource는 다음과 같습니다.
+
+| Resource       |     사용량 |      전체 |        사용률 |
+| -------------- | ------: | ------: | ---------: |
+| CLB LUT        |  67,153 | 117,120 | **57.34%** |
+| CLB Register   | 116,098 | 234,240 | **49.56%** |
+| Block RAM Tile |     104 |     144 | **72.22%** |
+| RAMB36         |      96 |     144 |     66.67% |
+| RAMB18         |      16 |     288 |      5.56% |
+| URAM           |      48 |      64 | **75.00%** |
+| DSP            |     468 |   1,248 | **37.50%** |
+
+특히 중요한 건 BRAM입니다.
+
+```text
+초기 통합 설계
+158.5 / 144 = 110.07%  → FAIL
+
+burst=16만 적용
+146 / 144 = 101.39%    → FAIL
+
+burst=16 + AXI widen 128-bit 제한
+104 / 144 = 72.22%     → PASS
+```
+
+즉 **AXI widening 제한이 결정적으로 효과가 있었습니다.** 최종적으로 BRAM이 146 → 104 tile로 무려 42 tile 감소했고, 초기 158.5 대비로는 54.5 tile 감소했습니다.
+
+Timing도 모두 통과했습니다.
+
+```text
+WNS = +0.004 ns
+TNS = 0.000 ns
+
+WHS = +0.009 ns
+THS = 0.000 ns
+```
+
+그리고 Vivado가 직접:
+
+```text
+All user specified timing constraints are met.
+```
+
+라고 보고했습니다.
+
+따라서 해석은:
+
+```text
+Setup timing : PASS
+Hold timing  : PASS
+```
+
+입니다.
+
+다만 timing margin은 꽤 작습니다.
+
+```text
+WNS = +0.004 ns = 4 ps
+WHS = +0.009 ns = 9 ps
+```
+
+즉 **통과는 했지만 여유가 매우 크지는 않은 설계**입니다. 이것도 보고서에 솔직하게 적는 게 좋습니다.
+
+이번 최종 결과를 한 문장으로 정리하면:
+
+> **B2304 DPU와 ROI Crop/Resize HLS 커널을 KV260에 통합한 결과, 초기에는 BRAM 사용량이 110.07%로 구현이 불가능했으나, M_AXI burst length 및 AXI widening을 최적화하여 최종 BRAM 사용량을 72.22%까지 감소시켰으며, routed timing에서도 WNS +0.004 ns, WHS +0.009 ns로 setup/hold timing을 모두 만족하였다.**
+
+이제 FPGA 구현 관점에서는 **보드에 올려서 실제 ROI 동작 + DPU inference + FPS를 검증하는 단계**로 넘어가면 됩니다.
