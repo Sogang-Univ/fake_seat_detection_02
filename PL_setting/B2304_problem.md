@@ -1,5 +1,5 @@
 # KV260 B2304 + ROI Crop/Resize 통합 결과 정리
-
+# v.1
 ## 1. 현재 목표
 
 KV260에서 아래 구조를 하나의 PL 설계로 통합하는 것을 목표로 함.
@@ -503,3 +503,182 @@ m00_data_fifo_0	15	2	16.0
 s01_data_fifo_0	8	1	8.5
 
 B2304가 너무 큰 것이 아니라, ROI+Resize 추가 시 생성된 AXI Data FIFO 4개가 무려 48.5 BRAM Tile을 사용하고 있으므로, 먼저 HLS의 AXI burst/widening/outstanding 설정을 최적화해야 합니다.
+
+# V.2
+좋습니다. 이번 결과로 **어디에서 BRAM이 줄었는지가 명확하게 확인됐습니다.** 핵심은 예상과 조금 다릅니다.
+
+### V1 → V2 비교
+
+| 항목                | V1: Burst 256 | V2: Burst 16 |        변화 |
+| ----------------- | ------------: | -----------: | --------: |
+| 전체 Block RAM Tile |         158.5 |    **146.0** | **-12.5** |
+| 사용률               |       110.07% |  **101.39%** |   -8.68%p |
+| RAMB36            |           134 |      **122** |       -12 |
+| RAMB18            |            49 |       **48** |        -1 |
+| LUT               |        81,468 |   **77,214** |    -4,254 |
+| FF                |       125,919 |      125,898 |     거의 동일 |
+| URAM              |            48 |           48 |        동일 |
+| DSP               |           468 |          468 |        동일 |
+
+즉 `max_*_burst_length=256 → 16`만으로 **BRAM Tile이 12.5개 감소**했습니다.
+
+---
+
+## 그런데 어디가 줄었는지가 중요합니다
+
+이전과 현재 IP별 결과를 비교하면:
+
+| 블록                |       V1 |       V2 |        변화 |
+| ----------------- | -------: | -------: | --------: |
+| B2304 DPU         |     55.0 |     55.0 |         0 |
+| `crop_and_resize` | **34.5** | **22.0** | **-12.5** |
+| `auto_us_cc_df_0` |     16.0 |     16.0 |         0 |
+| `auto_us_df_0`    |      8.0 |      8.0 |         0 |
+| `m00_data_fifo_0` |     16.0 |     16.0 |         0 |
+| `s01_data_fifo_0` |      8.5 |      8.5 |         0 |
+
+이게 이번 결과의 핵심입니다.
+
+제가 앞에서 예상했던 것과 달리, **자동 생성된 외부 AXI Data FIFO 48.5 Tile은 전혀 줄지 않았습니다.**
+
+줄어든 12.5 Tile은 전부:
+
+```text
+crop_and_resize
+34.5 → 22.0
+```
+
+에서 발생했습니다.
+
+즉 `max_read_burst_length`와 `max_write_burst_length`를 줄이자 **HLS 커널 내부의 M_AXI adapter/buffering 자원이 감소한 것**으로 해석하는 게 맞습니다.
+
+---
+
+# 현재 상태
+
+이제 전체 BRAM은:
+
+```text
+146 / 144
+= 101.39%
+```
+
+입니다.
+
+처음에는:
+
+```text
+158.5 / 144
+```
+
+였으니 굉장히 많이 개선됐습니다.
+
+하지만 아직:
+
+```text
+146 > 144
+```
+
+라서 **2 Block RAM Tile이 초과**합니다.
+
+그래서 Vivado가:
+
+```text
+Placer not run.
+```
+
+하고 다시 멈춘 것입니다.
+
+로그의:
+
+```text
+requires 290 ...
+only 288 compatible sites
+```
+
+도 같은 문제를 보여줍니다. 다만 `290 compatible sites`와 단순한 `RAMB36×2 + RAMB18` 계산은 Vivado의 BRAM site compatibility 때문에 완전히 같은 숫자로 해석하지 않는 것이 좋습니다.
+
+---
+
+# 다음에는 무엇을 하면 되나?
+
+지금은 **다른 설정을 건드리지 않고 Burst를 한 번 더 낮추는 게 가장 깔끔합니다.**
+
+현재:
+
+```cpp
+max_read_burst_length=16
+max_write_burst_length=16
+```
+
+을:
+
+```cpp
+#pragma HLS INTERFACE m_axi port=src offset=slave bundle=gmem0 \
+    depth=SIM_SRC_DEPTH max_read_burst_length=8
+
+#pragma HLS INTERFACE m_axi port=dst offset=slave bundle=gmem1 \
+    depth=SIM_DST_DEPTH max_write_burst_length=8
+```
+
+로 바꾸세요.
+
+즉 실험은 이렇게 이어집니다.
+
+```text
+V1
+burst = 256
+158.5 / 144
+FAIL
+        ↓
+V2
+burst = 16
+146 / 144
+FAIL
+        ↓
+V3
+burst = 8
+? / 144
+```
+
+**지금은 `max_widen_bitwidth`까지 같이 바꾸지 않는 것을 권합니다.** Burst 하나만 변화시키면서 결과를 보면 어떤 설정이 자원에 영향을 미쳤는지 명확하게 설명할 수 있기 때문입니다.
+
+---
+
+## 다만 목표는 144 이하가 아닙니다
+
+예를 들어 V3에서:
+
+```text
+143.5 / 144
+```
+
+가 나왔다고 해서 “완료”라고 보면 안 됩니다.
+
+그건 BRAM을 사실상 100% 사용하는 상태라서 이후 placement/routing이나 다른 작은 변화에 매우 취약합니다.
+
+가능하다면:
+
+```text
+130대 BRAM Tile
+```
+
+정도까지 확보하는 것이 훨씬 낫습니다.
+
+그래서 V3가 예를 들어:
+
+```text
+140 / 144
+```
+
+로만 내려간다면 placement는 시도해보되, 이후에는 `max_widen_bitwidth` 또는 외부 AXI FIFO 48.5 Tile을 줄이는 최적화도 검토할 가치가 있습니다.
+
+---
+
+### 이번 실험에서 얻은 중요한 결론
+
+보고서에는 이렇게 정리할 수 있습니다.
+
+> 초기 통합 설계에서는 Block RAM 사용량이 158.5/144 Tile(110.07%)로 구현이 불가능하였다. HLS M_AXI의 최대 burst length를 256에서 16으로 축소한 결과, `crop_and_resize` 커널의 BRAM 사용량이 34.5 Tile에서 22 Tile로 감소하였으며 전체 BRAM 사용량도 146 Tile(101.39%)까지 감소하였다. 반면 Vitis가 자동 생성한 AXI Data FIFO의 BRAM 사용량은 변하지 않아, burst length 감소가 주로 HLS 커널 내부 AXI adapter의 buffering 자원에 영향을 준 것으로 확인하였다.
+
+이건 꽤 좋은 최적화 결과입니다. **다음 단계는 Burst 8 버전 XO 생성 → 교체 → 재빌드**입니다.
