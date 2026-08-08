@@ -33,12 +33,10 @@ flowchart LR
 | 단계 | 처리 내용 | 수행 위치 | 구현 |
 |:----:|-----------|-----------|------|
 | 1 | 영상 데이터 입력 | 외부 (PS) | PYNQ |
-| 2 | ROI Crop | 내부 (PL) | Vitis HLS |
-| 3 | Resize 및 bounding box 전처리 | 외부 (PS) | PYNQ |
-| 4 | YOLO 추론 | 내부 (PL) | DPU |
-| 5 | 데이터 후처리 | 외부 (PS) | C/C++ |
+| 2 | ROI Crop 및 Resize| 내부 (PL) | Vitis HLS |
+| 3 | YOLO 추론 | 내부 (PL) | DPU |
+| 4 | 데이터 후처리 | 외부 (PS) | python |
 
-> ※ 3단계의 bounding box 전처리는 crop된 ROI를 모델 입력 크기에 맞추는 letterbox 좌표 계산을 의미한다. 실제 검출 박스 디코딩은 5단계 후처리에서 수행된다.
 
 ## 유령 좌석(사석) 판단 로직
 5단계 후처리에서 YOLO 검출 결과를 바탕으로 좌석 상태를 판정한다.
