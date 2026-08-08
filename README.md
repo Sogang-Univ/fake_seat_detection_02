@@ -20,14 +20,13 @@ AMD Kria KV260 Vision AI Starter Kit을 사용해, 입력 영상에서 좌석 �
 ## 데이터 흐름
 ```mermaid
 flowchart LR
-    A[1 영상 입력] --> B[2 ROI Crop]
-    B --> C[3 Resize · 전처리]
-    C --> D[4 YOLO 추론]
-    D --> E[5 데이터 후처리]
+    A[1 영상 입력] --> B[2 ROI Crop 및 Resize]
+    B --> C[3 YOLO 추론]
+    C --> D[4 데이터 후처리]
     classDef ps fill:#E6F1FB,stroke:#185FA5,color:#0C447C
     classDef pl fill:#E1F5EE,stroke:#0F6E56,color:#085041
-    class A,C,E ps
-    class B,D pl
+    class A,D ps
+    class B,C pl
 ```
 
 | 단계 | 처리 내용 | 수행 위치 | 구현 |
