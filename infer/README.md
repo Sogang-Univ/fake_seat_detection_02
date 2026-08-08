@@ -1,86 +1,19 @@
-# DPU 기반 YOLO 추론 모듈
+# YOLOv5 DPU 파이프라인 개발 현황 및 요약
 
-> PYNQ-DPU 환경에서 INT8 양자화된 YOLOv5 모델을 실행하고, 출력 Feature Map을 후처리하여 객체 탐지 결과를 생성한다.
+## 1. 진행한 작업 (What We Did)
+- **DPU 추론 파이프라인 구축**: Xilinx Vitis AI DPU 상에서 YOLOv5n 모델 구동, `.npy` 프레임 데이터 입력 및 Raw 텐서 출력 수집 파이프라인 완성.
+- **후처리 및 NMS 연동**: DPU 출력 텐서를 디코딩하고 NMS(Non-Maximum Suppression)를 거쳐 최종 Bounding Box 및 Score를 추출하는 흐름 검증 완료.
 
-## 개요
+## 2. 해결한 문제 (Fixed Issues)
+- **엉뚱한 클래스 폭발 현상 해결**: 초기에 넥타이(Class 27), 연(Class 38) 등 관련 없는 사물이 높은 신뢰도(0.85 이상)로 수십 개씩 도배되던 문제 해결.
+  - **조치**: NMS 호출 직전에 관심 클래스(사람 등 10개)만 1차 추출하도록 필터링 로직 반영 및 Class-aware NMS 적용.
 
-추론 모듈은 ROI Crop 및 Resize가 완료된 입력 데이터를 받아 DPU에서 YOLO 추론을 수행한다. 추론 결과는 역양자화와 YOLO 후처리를 거쳐 Bounding Box 및 객체 정보로 변환된다.
+## 3. 남은 문제 (Remaining Issues)
+- **낮은 신뢰도 (Score 0.2~0.3대)**: 사람을 잡더라도 Score가 0.27~0.35 수준으로 매우 낮음.
+- **허위/착시 검출 (Ghost Detection)**: 사람이 없는 빈 프레임에서도 모니터나 의자 같은 검은 영역을 사람(Class 0)으로 오인.
+- **색상 채널(RGB/BGR) 가설 기각**: BGR ↔ RGB 반전 테스트 진행 결과 유의미한 점수 상승이 없어 색상 문제는 아닌 것으로 판명.
 
-## 데이터 흐름
-
-```mermaid
-flowchart LR
-    A[ROI Crop 결과<br/>640×640 NPY] --> B[INT8] [Quantize & Compile]
-    B --> C[DPU Overlay]
-    C --> D[YOLOv5 추론]
-    D --> E[Output Dequantization]
-    E --> F[YOLO Decode]
-    F --> G[NMS]
-    G --> H[객체 탐지 결과]
-```
-
-## 모듈 구성
-
-| 구성 요소 | 역할 |
-|-----------|------|
-| `DpuOverlay` | FPGA Overlay 및 DPU 초기화 |
-| `load_model()` | 컴파일된 `.xmodel` 로드 |
-| `execute_async()` | DPU 추론 실행 |
-| `decode_yolo_output()` | YOLO 출력 Feature Map 해석 |
-| `nms()` | 중복 Bounding Box 제거 |
-| `build_results()` | 최종 탐지 결과 생성 |
-
-## 주요 변수
-
-| 변수 | 설명 |
-|------|------|
-| `XMODEL_PATH` | 컴파일된 YOLOv5 xmodel |
-| `BIT_PATH` | DPU Overlay(bitstream) |
-| `CONF_THRESHOLD` | Confidence Threshold |
-| `IOU_THRESHOLD` | NMS IoU Threshold |
-| `CLASS_NAMES` | COCO 클래스 |
-| `INTERESTED_CLASSES` | 후처리 대상 객체 클래스 |
-
-## 동작 과정
-
-1. FPGA Overlay 및 DPU Runner 초기화
-2. 입력 영상을 INT8 형식으로 변환
-3. `execute_async()`를 이용한 DPU 추론
-4. Output Tensor 역양자화
-5. YOLO Decode 수행
-6. Confidence Filtering 및 NMS
-7. 객체 탐지 결과 생성
-
----
-
-# 현재 이슈
-
-현재 추론 파이프라인은 구현되었으나, DPU 추론 결과가 정상적으로 생성되지 않는 문제를 확인하였다.
-
-### 증상
-
-- 입력 데이터와 관계없이 DPU 출력이 항상 동일한 값으로 고정됨
-- 다양한 입력(실영상, 단색 영상, 무작위 노이즈)에서도 동일한 출력 발생
-
-### 원인 분석 과정
-
-초기에는 하드웨어 및 메모리 문제를 의심하여 다음 항목을 확인하였다.
-
-- DMA 버퍼 및 Cache Flush/Invalidate 검증
-- Device Tree 및 DPU Driver 설정 확인
-- 입력 데이터 및 메모리 전달 방식 검증
-
-이후 동일한 DPU 환경에서 다른 모델이 정상 동작하는 것을 확인하여, 시스템 문제가 아닌 **컴파일된 `xmodel` 자체의 문제**로 분석하였다.
-
-현재는 양자화(PTQ) 과정에서 생성된 `xmodel`의 이상 여부를 가장 유력한 원인으로 판단하고 있다.
-
----
-
-# 개선 방향
-
-현재는 양자화 파이프라인을 중심으로 다음 사항을 검증하고 있다.
-
-- Calibration(양자화 보정 과정) 입력 데이터의 정규화 과정 재검토
-- Calibration 데이터 수 증가 및 통계 안정화
-- 새로운 xmodel 생성 후 DPU 재검증
-- 필요 시 Layer Dump를 이용한 레이어별 출력 분석
+## 4. 향후 시도할 과제 (Next Steps)
+1. **입력 정규화 (`/ 255.0`) 검증**: `.npy` 파일의 픽셀 값이 0~255 범위일 경우, `arr.astype(np.float32) / 255.0` 적용 후 추론 결과 확인.
+2. **앵커 박스(Anchor Box) 점검**: 디코딩 코드 내 하드코딩된 앵커 좌표가 공식 YOLOv5n v6.2 규격과 일치하는지 확인.
+3. **공식 모델 재양자화 (Quantization)**: 전처리/앵커 문제가 아닐 경우, Ultralytics 공식 `yolov5n.pt`(v6.2)를 받아 Vitis AI Quantizer부터 재진행.
