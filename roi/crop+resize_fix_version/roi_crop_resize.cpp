@@ -303,14 +303,14 @@ void crop_and_resize(
     // AXI MASTER
     // =========================================================
 
-#pragma HLS INTERFACE m_axi port=src offset=slave bundle=gmem0 depth=SIM_SRC_DEPTH max_read_burst_length=256
+#pragma HLS INTERFACE m_axi port=src offset=slave bundle=gmem0 depth=SIM_SRC_DEPTH max_read_burst_length=16 max_widen_bitwidth=128
 
-#pragma HLS INTERFACE m_axi port=dst offset=slave bundle=gmem1 depth=SIM_DST_DEPTH max_write_burst_length=256
+#pragma HLS INTERFACE m_axi port=dst offset=slave bundle=gmem1 depth=SIM_DST_DEPTH max_write_burst_length=16 max_widen_bitwidth=128
 
 
     // =========================================================
     // AXI-LITE
-    // =========================================================
+    // ========================================================
 
 #pragma HLS INTERFACE s_axilite port=src
 #pragma HLS INTERFACE s_axilite port=dst
