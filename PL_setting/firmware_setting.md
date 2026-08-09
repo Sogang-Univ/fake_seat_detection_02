@@ -1,4 +1,4 @@
-'''
+```
 Vitis/Vivado에서
 DPU + ROI/Resize 통합 빌드
         ↓
@@ -21,4 +21,4 @@ xmutil이 앱으로 인식
 sudo xmutil loadapp
         ↓
 FPGA PL 구성 + XRT 커널 사용 가능
-'''
+```
