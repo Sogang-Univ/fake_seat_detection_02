@@ -77,3 +77,14 @@ x/y/w/h/conf + 필요한 class만 선택
 | **Total**        | **85.19 ms** | **67.79 ms** |
 | **FPS**          |    **11.71** |    **14.71** |
 
+### 
+
+Capture        : 31.67 ms
+Crop+Resize    :  5.10 ms
+C++ Preprocess :  4.28 ms
+DPU            : 17.48 ms
+C++ DecodeNMS  :  9.15 ms
+Flags+State    :  0.07 ms
+Total          : 67.74 ms
+FPS            : 14.71
+
