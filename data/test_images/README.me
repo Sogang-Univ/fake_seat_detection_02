@@ -1,0 +1,35 @@
+# 추론용 이미지 데이터셋 (Inference Dataset)
+
+## 개요 (Overview)
+다양한 조도 환경과 물품 조합 시나리오를 자동 촬영(640x640 해상도)하여, 모델 학습 및 추론 파이프라인에 즉시 투입할 수 있도록 `.jpg` 이미지 파일과 `.npy` 형식으로 저장하게끔 함. 
+
+## 데이터셋 시나리오 구성 (Dataset Scenarios)
+총 5종의 타겟 물품(예: cup, bag, tablet, note, people 등)을 활용하여 **10가지 촬영 씬(Scene)**을 구성하였으며, 각 씬마다 **3가지 조도(Lighting) 조건**을 적용하여 **총 30세트(JPG+NPY)**의 데이터를 촬영함.
+
+| 촬영 씬(Scene) 분류 | 세부 내용 | 구성 개수 |
+| :--- | :--- | :--- |
+| **빈 배경 (Background)** | 아무것도 없는 빈 책상 (Empty) | 1종 |
+| **단일 물품 (Single)** | 5개 물품 각각 단독 배치 후 촬영 | 5종 |
+| **복합 물품 (Multi)** | 5개 물품 중 임의의 개수 및 종류로 조합하여 촬영 | 4종 |
+| **조도 변화 (Lighting)** | 어둡게(Dark), 중간(Medium), 밝게(Bright) | 각 씬별 3단계 |
+| **총계 (Total)** | 10종 씬 x 3단계 조도 | **총 30장** |
+
+### 조도(Lighting) 설정 세부 지표
+데이터의 일관성을 위해 카메라의 자동 노출(Auto Exposure)을 차단(수동 모드)하고, `v4l2-ctl` 명령어를 통해 직접 하드웨어 수치를 제어했습니다.
+*   **Dark (어둡게):** 절대 노출(`exposure_time_absolute`) 10, 기본 밝기(`brightness`) 0
+*   **Medium (중간):** 절대 노출(`exposure_time_absolute`) 156, 기본 밝기(`brightness`) 128
+*   **Bright (밝게):** 절대 노출(`exposure_time_absolute`) 5000, 기본 밝기(`brightness`) 255
+
+## 파일 구조 및 네이밍 규칙 (File Structure)
+모든 데이터는 `640x640` 정사각형 해상도로 리사이즈되어 저장됩니다.
+
+**파일명 규칙:** `[인덱스]_[물품 구성]_[조도].(jpg/npy)`
+*   `1_empty_bright.jpg` / `1_empty_bright.npy`
+*   `2_cup_dark.jpg` / `2_cup_dark.npy`
+*   `8_bagnotetablet_medium.jpg` / `8_bagnotetablet_medium.npy`
+*   `10_tabletpeople_bright.jpg` / `10_tabletpeople_bright.npy`
+
+## 촬영 하드웨어 및 소프트웨어 환경 (Environment)
+*   **Host Board:** Kria Board (Ubuntu 환경)
+*   **Camera:** Logitech C270 Webcam (USB 연결, `/dev/video0`)
+*   **Dependencies:** Python 3, OpenCV (`cv2`), Numpy, `v4l-utils`, `fswebcam`
