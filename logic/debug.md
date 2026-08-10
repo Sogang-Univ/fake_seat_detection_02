@@ -20,3 +20,47 @@
 | Postprocess 전체   |     202.94 ms |     66.88 ms |   **약 3배 빨라짐** |
 | 전체 frame latency |     257.25 ms |    118.42 ms |   **약 54% 감소** |
 | FPS              |      3.86 FPS |    약 8.5 FPS |  **약 2.2배 증가** |
+
+### adapter 및 decode 수정
+```
+현재
+
+DPU
+int8 NHWC 255
+   ↓
+adapter
+255채널 전체 float32
+   ↓
+reshape/transpose
+   ↓
+전체 contiguous copy
+   ↓
+decoder에서 필요한 4개 class 선택
+```
+```
+개선
+
+DPU
+int8 NHWC 255
+   ↓
+adapter
+reshape/transpose만 수행
+INT8 그대로 유지
+   ↓
+decoder
+x/y/w/h/conf + 필요한 class만 선택
+   ↓
+선택한 값만 float32/dequant
+```
+
+| 단계              |           이전 |          현재 |           변화 |
+| --------------- | -----------: | ----------: | -----------: |
+| Capture         |      8.31 ms |     8.00 ms |        거의 동일 |
+| Crop+Resize     |      5.20 ms |     5.15 ms |        거의 동일 |
+| Quantize        |     20.57 ms |    27.40 ms |           증가 |
+| DPU             |     17.46 ms |    17.53 ms |           동일 |
+| **Adapt heads** | **28.56 ms** | **0.11 ms** |   **거의 제거됨** |
+| Decode+NMS      |     38.24 ms |    35.22 ms |        소폭 감소 |
+| Postprocess 전체  |     66.88 ms |    35.38 ms | **약 47% 감소** |
+| Total           |    118.42 ms |    93.45 ms | **약 21% 감소** |
+| FPS             |        약 8.5 |   **10.67** | **약 25% 증가** |
