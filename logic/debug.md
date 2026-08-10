@@ -77,7 +77,7 @@ x/y/w/h/conf + 필요한 class만 선택
 | **Total**        | **85.19 ms** | **67.79 ms** |
 | **FPS**          |    **11.71** |    **14.71** |
 
-### 
+### quantize 파트를 c++로 변경
 
 ```
 Average FPS    : 14.71 FPS
