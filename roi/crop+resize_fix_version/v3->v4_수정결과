@@ -1,0 +1,508 @@
+응. 그걸 기준으로 다시 딱 정리하면, **이번에 바뀐 건 `h`에서는 출력 버퍼 정의/인터페이스 관련 상수, `cpp`에서는 후반부 출력 생성 방식과 quantization 로직**이야.
+
+이전 `crop+resize` 코드와 지금 `crop+resize+quant` 코드를 비교하면 이렇게 보면 돼.
+
+### 1. `.h`에서 바뀐 것
+
+이전에는 출력이 **RGBx 32bit/pixel**이었기 때문에 출력 크기가:
+
+```cpp
+640 * 640 * 4 byte
+```
+
+였어. 지금은 출력이 **RGB INT8 3byte/pixel**이라서:
+
+```cpp
+640 * 640 * 3 byte
+```
+
+가 됐어.
+
+그래서 `SIM_DST_DEPTH`의 의미가 바뀌었어. 현재는 128-bit word 기준:
+
+```cpp
+#define SIM_SRC_DEPTH 76800
+#define SIM_DST_DEPTH 76800
+```
+
+이야.
+
+입력:
+
+```text
+640×480×4 byte
+= 1,228,800 byte
+= 76,800 × 128bit
+```
+
+출력:
+
+```text
+640×640×3 byte
+= 1,228,800 byte
+= 76,800 × 128bit
+```
+
+라서 우연히 둘 다 `76800 word`가 된 거야.
+
+그리고 padding도 quantized 값이 필요해서:
+
+```cpp
+#define PAD_VALUE   114
+#define PAD_Q_VALUE 29
+```
+
+가 추가됐어.
+
+하지만 top 함수 인터페이스:
+
+```cpp
+void crop_and_resize(
+    const word_t* src,
+    word_t* dst,
+    int src_w,
+    int src_h,
+    int x0,
+    int y0,
+    int roi_w,
+    int roi_h,
+    int dst_size
+);
+```
+
+는 **그대로야.**
+
+즉 외부에서 보면 여전히:
+
+```text
+128-bit AXI input
+128-bit AXI output
+```
+
+이야.
+
+---
+
+### 2. `.cpp`에서 가장 큰 변화: quantization 추가
+
+예전에는 bilinear resize가 끝나면 RGB 값 `0~255`를 그대로 출력했어.
+
+지금은 각 채널에:
+
+```cpp
+static ap_uint<8> quantize_channel(ap_uint<8> value)
+{
+#pragma HLS INLINE
+
+    ap_uint<9> extended =
+        (ap_uint<9>)value + 2;
+
+    return (ap_uint<8>)(extended >> 2);
+}
+```
+
+를 적용해.
+
+즉:
+
+```text
+이전
+Resize RGB
+R=80 G=120 B=40
+        ↓
+그대로 출력
+80 120 40
+```
+
+에서
+
+```text
+현재
+Resize RGB
+R=80 G=120 B=40
+        ↓
+INT8 quant
+20 30 10
+        ↓
+출력
+```
+
+으로 바뀐 거야.
+
+그래서 이전에 PS에서 하던 quantization을 PL로 옮긴 거야.
+
+---
+
+### 3. 이전에는 픽셀 하나가 32bit였고, 지금은 24bit
+
+예전 HLS 출력:
+
+```text
+Pixel 0
+R G B X   = 32bit
+
+Pixel 1
+R G B X   = 32bit
+```
+
+즉:
+
+```text
+R0 G0 B0 X0 R1 G1 B1 X1 ...
+```
+
+이었어.
+
+지금은 X/A 채널을 버리고:
+
+```text
+R0 G0 B0 R1 G1 B1 R2 G2 B2 ...
+```
+
+로 출력해.
+
+즉 **32bit/pixel → 24bit/pixel**로 바뀐 게 굉장히 큰 차이야.
+
+---
+
+### 4. 그래서 `out_line`/기존 출력 구조가 없어지고 packing이 바뀜
+
+예전 crop+resize에서는 resize 결과가 `pixel_t`, 즉:
+
+```cpp
+typedef ap_uint<32> pixel_t;
+```
+
+였어.
+
+그걸 4개씩 묶어서:
+
+```text
+4 pixel × 32bit
+= 128bit
+```
+
+로 DDR에 쓰면 됐어.
+
+그래서 굉장히 자연스러웠지.
+
+```text
+P0 P1 P2 P3
+↓
+128bit word
+```
+
+그런데 지금은:
+
+```text
+1 pixel = RGB = 24bit
+```
+
+라서 128bit에 딱 나누어 떨어지지 않아.
+
+```text
+128 / 24 = 5.333...
+```
+
+그래서 처음에는 우리가 픽셀마다 어느 128-bit word에 들어가는지 계산하는:
+
+```cpp
+put_quant_pixel(...)
+```
+
+을 만들었어.
+
+그게 LUT 39k를 먹었던 버전이야.
+
+---
+
+### 5. 최종 `.cpp`에서는 384bit packing을 사용
+
+이게 지금 가장 중요한 구조 변경이야.
+
+RGB pixel 하나가 24bit니까 **16 pixel을 모으면**:
+
+```text
+24 × 16
+= 384bit
+```
+
+이 돼.
+
+그리고:
+
+```text
+384bit
+= 128bit × 3
+```
+
+로 정확하게 나뉘어.
+
+그래서 현재는:
+
+```text
+16 pixels
+
+P0 = RGB 24bit
+P1 = RGB 24bit
+...
+P15 = RGB 24bit
+
+        ↓
+
+384bit packet
+
+        ↓
+
+128bit word 0
+128bit word 1
+128bit word 2
+```
+
+구조로 바꿨어.
+
+코드에서는:
+
+```cpp
+typedef ap_uint<384> pack384_t;
+```
+
+를 추가했고,
+
+매 픽셀마다:
+
+```cpp
+packet = packet >> 24;
+
+packet.range(383, 360) = rgb24;
+```
+
+로 넣어.
+
+16픽셀이 쌓이면:
+
+```cpp
+if ((ox & 15) == 15)
+{
+    out_stream.write(packet);
+}
+```
+
+로 384-bit stream에 넘겨.
+
+---
+
+### 6. Writer도 그래서 변경됨
+
+예전에는 stream 하나가 `128bit`였으니까:
+
+```cpp
+hls::stream<word_t>
+```
+
+를 받아서 그냥:
+
+```cpp
+dst_row[w] = out_stream.read();
+```
+
+하면 됐어.
+
+지금은 stream이:
+
+```cpp
+hls::stream<pack384_t>
+```
+
+즉 384bit야.
+
+그래서 하나 읽은 다음:
+
+```cpp
+packet.range(127, 0)
+packet.range(255, 128)
+packet.range(383, 256)
+```
+
+세 개로 잘라서 DDR에 써.
+
+즉:
+
+```text
+384-bit stream
+      ↓
+ ┌────┼────┐
+128  128  128
+ ↓    ↓    ↓
+DDR  DDR  DDR
+```
+
+가 된 거야.
+
+---
+
+### 7. Padding 처리도 크게 바뀜
+
+이전에는 padding도 일반 pixel과 똑같이:
+
+```text
+114,114,114
+```
+
+를 픽셀 하나씩 생성했어.
+
+PL quantization을 처음 넣은 버전에서는:
+
+```text
+29,29,29
+```
+
+를 **640번 직접 pack**했는데, 이게 LUT를 엄청 먹었어.
+
+지금은:
+
+```text
+RGB = (29,29,29)
+```
+
+인 픽셀 16개를 미리 하나의:
+
+```text
+384-bit pad_packet
+```
+
+으로 만든 다음:
+
+```cpp
+for (int g = 0; g < 40; g++)
+{
+    out_stream.write(pad_packet);
+}
+```
+
+으로 40번만 내보내.
+
+그래서 padding LUT가:
+
+```text
+12,727
+→
+103
+```
+
+까지 떨어졌어.
+
+---
+
+### 8. 반대로 안 바뀐 부분도 중요해
+
+**ROI crop 방식은 거의 그대로야.**
+
+```cpp
+x0_aligned
+x_offset
+roi_w4
+src_w4
+x0_4
+```
+
+계산도 그대로고,
+
+두 line buffer:
+
+```cpp
+line0
+line1
+```
+
+도 그대로야.
+
+DDR에서 row를 읽는:
+
+```cpp
+load_row()
+```
+
+도 기본적으로 그대로야.
+
+소스 row 재사용:
+
+```text
+현재 sy0이 이전 sy0+1이면
+기존 line 하나 재사용
+새 row 하나만 DDR에서 읽음
+```
+
+구조도 그대로야.
+
+bilinear interpolation:
+
+```cpp
+blend4()
+```
+
+도 현재는 그대로 유지했어.
+
+DATAFLOW 구조도:
+
+```text
+resize producer
+       ↓
+    stream
+       ↓
+DDR writer
+```
+
+라는 큰 틀은 그대로야.
+
+즉 우리가 **resize 알고리즘 자체를 갈아엎은 게 아니야.**
+
+---
+
+결국 이전 `.cpp`에서:
+
+```text
+DDR RGBx
+ ↓
+ROI crop
+ ↓
+line buffer
+ ↓
+bilinear resize
+ ↓
+RGBx 32bit packing
+ ↓
+DDR
+```
+
+였던 뒤쪽을,
+
+현재는:
+
+```text
+DDR RGBx
+ ↓
+ROI crop
+ ↓
+line buffer
+ ↓
+bilinear resize
+ ↓
+RGB 채널만 추출
+ ↓
+INT8 quantization
+ ↓
+24bit RGB
+ ↓
+16 pixel → 384bit packing
+ ↓
+3 × 128bit
+ ↓
+DDR
+```
+
+로 바꾼 거야.
+
+**즉 `.h`는 출력 형식에 맞춘 상수 정도만 바뀌었고, 실질적인 구조 변경은 `.cpp`의 `resize 이후 → DDR 출력` 구간에 집중되어 있다**고 보면 정확해.
+
+그리고 이 구조 변경 때문에 결과적으로 HLS가 `crop + resize`뿐 아니라 **crop + resize + DPU용 INT8 tensor 생성까지 한 번에 수행하게 된 것**이 이번 코드의 핵심 차이야.
