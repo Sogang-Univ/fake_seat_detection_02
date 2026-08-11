@@ -6,6 +6,8 @@ AMD Kria KV260 Vision AI Starter Kit을 사용해, 입력 영상에서 좌석 �
 
 연산은 KV260의 **PS(ARM)** 와 **PL(FPGA fabric)** 에 나누어 배치한다. 무거운 연산(ROI Crop, YOLO 추론)은 PL에서 가속하고, 제어·전처리·후처리는 PS의 PYNQ 환경에서 수행한다.
 
+<img width="1292" height="720" alt="image" src="https://github.com/user-attachments/assets/7d993c8f-302a-40e7-af9e-14198b0ba703" />
+
 ### 배경 및 기대 효과
 도서관·학교 스터디 공간에서는 일부 이용자가 소지품만 남긴 채 좌석을 장시간 비우는 '사석화'로 인해 실제 이용 가능한 좌석이 줄어드는 문제가 있다. 기존에는 직원이 직접 순찰하며 확인해야 했지만, 본 시스템을 도입하면 이 과정을 자동화해 좌석 회전율을 높이고 관리 인력 부담을 줄일 수 있을 것으로 기대된다.
 
