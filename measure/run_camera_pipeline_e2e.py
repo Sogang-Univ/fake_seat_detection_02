@@ -17,6 +17,10 @@ from seat_state_machine import (
     SeatStateMachine
 )
 
+from detection import (
+    CLASS_NAMES,
+    detections_to_flags
+)
 
 # ============================================================
 # 설정
@@ -275,42 +279,6 @@ def fourcc_to_string(value):
         )
 
         for i in range(4)
-    )
-
-
-# ============================================================
-# Detection -> State flags
-# ============================================================
-
-def detections_to_flags_new(
-    detections
-):
-
-    person_present = False
-
-    object_present = False
-
-
-    for det in detections:
-
-        cls_id = int(
-            det["cls"]
-        )
-
-
-        if cls_id == 0:
-
-            person_present = True
-
-
-        elif cls_id in OBJECT_CLASS_IDS:
-
-            object_present = True
-
-
-    return (
-        person_present,
-        object_present
     )
 
 
@@ -1251,9 +1219,11 @@ try:
         # ====================================================
 
         person_present, object_present = (
+            detections_to_flags(
 
-            detections_to_flags_new(
-                detections
+                detections,
+
+                ROI_BOX
             )
         )
 
